@@ -31,6 +31,7 @@ RUN g++ -O2 -std=c++17 \
     src/main.cpp \
     Database.o sqlite3.o \
     -lpthread \
+    -static-libstdc++ -static-libgcc \
     -o sdcms_server
 
 # ── Stage 2: Runtime ──────────────────────────────────────────────────────────
