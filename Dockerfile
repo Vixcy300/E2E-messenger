@@ -12,24 +12,22 @@ RUN apt-get update && apt-get install -y libsqlite3-dev && rm -rf /var/lib/apt/l
 # Copy source files
 COPY src/            ./src/
 COPY include/        ./include/
-COPY sqlite-amalgamation-3430200/ ./sqlite-amalgamation-3430200/
 
 # Compile sqlite3 object
 RUN gcc -c -O2 \
-    sqlite-amalgamation-3430200/sqlite3.c \
+    src/sqlite3.c \
+    -I./include \
     -o sqlite3.o
 
 # Compile Database.cpp
 RUN g++ -c -O2 -std=c++17 \
     -I./include \
-    -I./sqlite-amalgamation-3430200 \
     src/Database.cpp \
     -o Database.o
 
 # Compile main.cpp + link everything
 RUN g++ -O2 -std=c++17 \
     -I./include \
-    -I./sqlite-amalgamation-3430200 \
     src/main.cpp \
     Database.o sqlite3.o \
     -lpthread \
