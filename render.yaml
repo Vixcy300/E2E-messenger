@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: sdcms-backend
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    envVars:
+      - key: PORT
+        value: 8080
+    healthCheckPath: /api/ping
+    autoDeploy: true

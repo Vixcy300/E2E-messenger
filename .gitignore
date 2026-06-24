@@ -1,0 +1,33 @@
+# Compiled Binaries and Objects
+*.exe
+*.obj
+*.o
+sdcms_server
+Database.obj
+main.obj
+sqlite3.obj
+
+# Databases and temporary DB files
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+sdcms.db
+sdcms.db-shm
+sdcms.db-wal
+
+# Zip files
+*.zip
+
+# Frontend dependencies and builds
+frontend/node_modules/
+frontend/dist/
+frontend/.env
+frontend/.env.local
+frontend/.env.development.local
+frontend/.env.test.local
+frontend/.env.production.local
+
+# OS files
+.DS_Store
+Thumbs.db
