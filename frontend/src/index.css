@@ -269,6 +269,24 @@ button { font-family: 'Inter', sans-serif; cursor: pointer; border: none; outlin
 .contact-time { font-size: 0.72rem; color: var(--text3); flex-shrink: 0; }
 .contact-preview { font-size: 0.8rem; color: var(--text2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 180px; }
 
+.timer-badge {
+  margin-left: 8px;
+  font-size: 0.7rem;
+  padding: 2px 6px;
+  background: rgba(229,57,53,0.15);
+  color: var(--danger);
+  border-radius: 4px;
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 700;
+  animation: pulse-danger 2s infinite;
+}
+
+@keyframes pulse-danger {
+  0% { opacity: 1; }
+  50% { opacity: 0.6; }
+  100% { opacity: 1; }
+}
+
 /* RTC badge */
 .rtc-badge {
   font-size: 0.62rem; font-weight: 700;
@@ -708,6 +726,25 @@ button { font-family: 'Inter', sans-serif; cursor: pointer; border: none; outlin
 }
 
 /* Biometric login section */
+.profile-modal-actions { margin-top: 24px; display: flex; flex-direction: column; gap: 8px; }
+
+/* ── Mobile Responsiveness ────────────────────────────────────────────────── */
+.mobile-back-btn { display: none; }
+
+@media (max-width: 768px) {
+  .sidebar { width: 100%; }
+  .chat-area { display: none; width: 100%; }
+  
+  .app.chat-active .sidebar { display: none; }
+  .app.chat-active .chat-area { display: flex; }
+  
+  .mobile-back-btn { display: flex; margin-right: 8px; }
+  
+  .login-card { width: 90%; padding: 30px 20px; }
+  
+  .bubble-wrap { max-width: 85%; }
+}
+
 .bio-login-section { margin-bottom: 14px; display: flex; flex-direction: column; gap: 8px; }
 .bio-login-btn {
   width: 100%; padding: 10px 16px;

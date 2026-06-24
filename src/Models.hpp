@@ -10,10 +10,11 @@ public:
     std::string publicKey;   // RSA Public Key for E2EE
     std::string lastSeen;    // ISO timestamp of last heartbeat
     std::string statusMsg;   // Custom status message
+    std::string expiresAt;   // ISO timestamp of account expiration
 
     User(std::string c, std::string r, std::string cl,
-         std::string pk = "", std::string ls = "", std::string sm = "")
-        : callsign(c), role(r), clearance(cl), publicKey(pk), lastSeen(ls), statusMsg(sm) {}
+         std::string pk = "", std::string ls = "", std::string sm = "", std::string exp = "")
+        : callsign(c), role(r), clearance(cl), publicKey(pk), lastSeen(ls), statusMsg(sm), expiresAt(exp) {}
 };
 
 // Represents an End-to-End Encrypted message

@@ -121,7 +121,8 @@ int main() {
                 j.value("clearance", "TOP SECRET"),
                 j.value("publicKey", ""),
                 "",
-                j.value("statusMsg", "Active")
+                j.value("statusMsg", "Active"),
+                j.value("expiresAt", "")
             );
             if (u.callsign.empty()) { res.status = 400; res.set_content("{\"error\":\"Callsign required\"}", "application/json"); return; }
             if (db->addUser(u)) { res.set_content("{\"status\":\"success\"}", "application/json"); }

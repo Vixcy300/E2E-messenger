@@ -36,7 +36,8 @@ bool Database::initialize() {
         "clearance TEXT, "
         "public_key TEXT, "
         "last_seen TEXT DEFAULT '', "
-        "status_msg TEXT DEFAULT 'Active');";
+        "status_msg TEXT DEFAULT 'Active', "
+        "expires_at TEXT DEFAULT '');";
     rc = sqlite3_exec(db, sqlUsers, nullptr, nullptr, &errMsg);
     if (rc != SQLITE_OK) {
         std::cerr << "SQL error creating Users table: " << errMsg << std::endl;
@@ -47,6 +48,7 @@ bool Database::initialize() {
     // Add columns if upgrading from older DB (safe to ignore errors)
     sqlite3_exec(db, "ALTER TABLE Users ADD COLUMN last_seen TEXT DEFAULT '';", nullptr, nullptr, nullptr);
     sqlite3_exec(db, "ALTER TABLE Users ADD COLUMN status_msg TEXT DEFAULT 'Active';", nullptr, nullptr, nullptr);
+    sqlite3_exec(db, "ALTER TABLE Users ADD COLUMN expires_at TEXT DEFAULT '';", nullptr, nullptr, nullptr);
 
     // Messages table
     const char* sqlMessages =
@@ -82,7 +84,7 @@ bool Database::initialize() {
 // ── User Operations ──────────────────────────────────────────────────────────
 
 bool Database::addUser(const User& user) {
-    const char* sql = "INSERT OR REPLACE INTO Users (callsign, role, clearance, public_key, last_seen, status_msg) VALUES (?, ?, ?, ?, ?, ?);";
+    const char* sql = "INSERT OR REPLACE INTO Users (callsign, role, clearance, public_key, last_seen, status_msg, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?);";
     sqlite3_stmt* stmt;
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) return false;
 
@@ -97,6 +99,7 @@ bool Database::addUser(const User& user) {
     sqlite3_bind_text(stmt, 4, user.publicKey.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 5, tsBuf, -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 6, user.statusMsg.empty() ? "Active" : user.statusMsg.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 7, user.expiresAt.c_str(), -1, SQLITE_TRANSIENT);
 
     bool ok = (sqlite3_step(stmt) == SQLITE_DONE);
     sqlite3_finalize(stmt);
@@ -133,8 +136,9 @@ bool Database::updateStatus(const std::string& callsign, const std::string& stat
 }
 
 std::vector<User> Database::getAllUsers() {
+    deleteExpiredUsers();
     std::vector<User> users;
-    const char* sql = "SELECT callsign, role, clearance, public_key, last_seen, status_msg FROM Users;";
+    const char* sql = "SELECT callsign, role, clearance, public_key, last_seen, status_msg, expires_at FROM Users;";
     sqlite3_stmt* stmt;
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) return users;
     while (sqlite3_step(stmt) == SQLITE_ROW) {
@@ -142,7 +146,7 @@ std::vector<User> Database::getAllUsers() {
             const char* p = reinterpret_cast<const char*>(sqlite3_column_text(stmt, col));
             return p ? p : "";
         };
-        users.emplace_back(text(0), text(1), text(2), text(3), text(4), text(5));
+        users.emplace_back(text(0), text(1), text(2), text(3), text(4), text(5), text(6));
     }
     sqlite3_finalize(stmt);
     return users;
@@ -150,7 +154,7 @@ std::vector<User> Database::getAllUsers() {
 
 User Database::getUser(const std::string& callsign) {
     User user("", "", "");
-    const char* sql = "SELECT callsign, role, clearance, public_key, last_seen, status_msg FROM Users WHERE callsign = ?;";
+    const char* sql = "SELECT callsign, role, clearance, public_key, last_seen, status_msg, expires_at FROM Users WHERE callsign = ?;";
     sqlite3_stmt* stmt;
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) return user;
     sqlite3_bind_text(stmt, 1, callsign.c_str(), -1, SQLITE_TRANSIENT);
@@ -159,7 +163,7 @@ User Database::getUser(const std::string& callsign) {
             const char* p = reinterpret_cast<const char*>(sqlite3_column_text(stmt, col));
             return p ? p : "";
         };
-        user = User(text(0), text(1), text(2), text(3), text(4), text(5));
+        user = User(text(0), text(1), text(2), text(3), text(4), text(5), text(6));
     }
     sqlite3_finalize(stmt);
     return user;
@@ -207,6 +211,7 @@ static Message msgFromStmt(sqlite3_stmt* stmt) {
 }
 
 std::vector<Message> Database::getInbox(const std::string& callsign) {
+    deleteExpiredUsers();
     std::vector<Message> messages;
     const char* sql =
         "SELECT id, sender, receiver, subject, classification, encrypted_body, encrypted_aes_key, "
@@ -221,6 +226,7 @@ std::vector<Message> Database::getInbox(const std::string& callsign) {
 }
 
 std::vector<Message> Database::getSent(const std::string& callsign) {
+    deleteExpiredUsers();
     std::vector<Message> messages;
     const char* sql =
         "SELECT id, sender, receiver, subject, classification, encrypted_body, encrypted_aes_key, "
@@ -249,6 +255,19 @@ bool Database::deleteExpiredMessages() {
     char tsBuf[32];
     strftime(tsBuf, sizeof(tsBuf), "%Y-%m-%dT%H:%M:%SZ", gmtime(&now));
     const char* sql = "DELETE FROM Messages WHERE expires_at != '' AND expires_at <= ?;";
+    sqlite3_stmt* stmt;
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) return false;
+    sqlite3_bind_text(stmt, 1, tsBuf, -1, SQLITE_TRANSIENT);
+    bool ok = (sqlite3_step(stmt) == SQLITE_DONE);
+    sqlite3_finalize(stmt);
+    return ok;
+}
+
+bool Database::deleteExpiredUsers() {
+    time_t now = time(nullptr);
+    char tsBuf[32];
+    strftime(tsBuf, sizeof(tsBuf), "%Y-%m-%dT%H:%M:%SZ", gmtime(&now));
+    const char* sql = "DELETE FROM Users WHERE expires_at != '' AND expires_at <= ?;";
     sqlite3_stmt* stmt;
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) return false;
     sqlite3_bind_text(stmt, 1, tsBuf, -1, SQLITE_TRANSIENT);

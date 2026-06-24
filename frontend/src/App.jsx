@@ -2,14 +2,15 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   generateRSAKeyPair, exportPublicKey, importPublicKey,
   generateAESKey, encryptTextAES, decryptTextAES,
-  encryptAESKeyWithRSA, decryptAESKeyWithRSA
+  encryptAESKeyWithRSA, decryptAESKeyWithRSA,
+  saveSession, loadSession, clearSession
 } from './crypto';
 import {
   Shield, ShieldAlert, Send, User, Lock, Zap, Search,
   CheckCheck, Check, Smile, Reply, Copy, Trash2, Bell, BellOff,
   LogOut, ChevronDown, X, MessageSquare, Mic, MicOff, Paperclip,
   Pin, Archive, Settings, Download, Upload, Wifi, WifiOff, Activity,
-  Eye, EyeOff, Fingerprint, Volume2, VolumeX, Palette, Image, Clock
+  Eye, EyeOff, Fingerprint, Volume2, VolumeX, Palette, Image, Clock, ChevronLeft
 } from 'lucide-react';
 import {
   initWebRTC, answerWebRTC, handleAnswer, handleIceCandidate,
@@ -234,7 +235,14 @@ export default function App() {
   const [theme, setTheme] = useState(() => localStorage.getItem('sdcms_theme') || 'dark-navy');
   const [canvasMode, setCanvasMode] = useState(() => localStorage.getItem('sdcms_canvas') || 'particles');
   const [biometricEnabled, setBiometricEnabled] = useState(false);
+  const [accountExpiresAt, setAccountExpiresAt] = useState('');
   const inactivityRef = useRef(null);
+
+  useEffect(() => {
+    if (localStorage.getItem('sdcms_session')) {
+      setScreen('session-recovery');
+    }
+  }, []);
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
@@ -256,19 +264,28 @@ export default function App() {
     return () => { evts.forEach(e => window.removeEventListener(e, reset)); clearTimeout(inactivityRef.current); };
   }, [screen, biometricEnabled]);
 
-  const handleLogin = async (cs, pw, st, registerBio) => {
+  const handleLogin = async (cs, pw, st, registerBio, lifespan) => {
     // Duress code check — silently burn
     if (pw.trim() === DURESS_CODE) {
       try { await fetch(`${API}/burn`, { method: 'POST', body: JSON.stringify({ callsign: cs }) }); } catch(_) {}
       setScreen('burned'); return;
     }
+    
+    let exp = "";
+    if (lifespan) {
+      exp = new Date(Date.now() + parseInt(lifespan) * 1000).toISOString();
+    }
+    
     const kp = await generateRSAKeyPair();
     const pub = await exportPublicKey(kp.publicKey);
     await fetch(`${API}/users`, {
       method: 'POST',
-      body: JSON.stringify({ callsign: cs, role: 'Operator', clearance: 'TOP SECRET', publicKey: pub, statusMsg: st || 'Active' })
+      body: JSON.stringify({ callsign: cs, role: 'Operator', clearance: 'TOP SECRET', publicKey: pub, statusMsg: st || 'Active', expiresAt: exp })
     });
-    setCallsign(cs); setKeys(kp); setUserStatus(st || 'Active');
+    
+    await saveSession(cs, kp, pw, exp);
+    
+    setCallsign(cs); setKeys(kp); setUserStatus(st || 'Active'); setAccountExpiresAt(exp);
     if (registerBio && webAuthnAvailable()) {
       try { await registerBiometric(cs); setBiometricEnabled(true); } catch(_) {}
     } else if (hasCred(cs)) {
@@ -289,30 +306,45 @@ export default function App() {
   };
 
   const handleLogout = useCallback(async () => {
-    setScreen('burned'); setKeys(null);
+    setScreen('burned'); setKeys(null); clearSession();
     const cs = callsign;
     try { navigator.sendBeacon(`${API}/burn`, new Blob([JSON.stringify({ callsign: cs })], { type: 'application/json' })); } catch(_) {}
   }, [callsign]);
+
+  const handleRecover = async (pw) => {
+    if (pw.trim() === DURESS_CODE) { handleLogout(); return; }
+    try {
+      const session = await loadSession(pw);
+      // Re-register heartbeat
+      const pub = await exportPublicKey(session.keys.publicKey);
+      await fetch(`${API}/users`, {
+        method: 'POST',
+        body: JSON.stringify({ callsign: session.callsign, role: 'Operator', clearance: 'TOP SECRET', publicKey: pub, statusMsg: 'Active', expiresAt: session.expiresAt })
+      });
+      setCallsign(session.callsign);
+      setKeys(session.keys);
+      setAccountExpiresAt(session.expiresAt);
+      if (hasCred(session.callsign)) setBiometricEnabled(true);
+      setScreen('app');
+    } catch (e) {
+      throw new Error(e.message);
+    }
+  };
 
   const handleUnlock = async () => {
     await authenticateBiometric(callsign);
     setScreen('app');
   };
 
-  useEffect(() => {
-    if (screen !== 'app' || !callsign) return;
-    const onUnload = () => {
-      navigator.sendBeacon(`${API}/burn`, new Blob([JSON.stringify({ callsign })], { type: 'application/json' }));
-    };
-    window.addEventListener('beforeunload', onUnload);
-    return () => window.removeEventListener('beforeunload', onUnload);
-  }, [screen, callsign]);
+  // Removing beforeunload so session survives refresh
+  // but if they actively logout, it burns.
 
   return (
     <>
       <CanvasBg mode={screen === 'app' ? canvasMode : 'none'} />
       {screen === 'burned' && <BurnScreen />}
       {screen === 'locked' && <BiometricLock callsign={callsign} onUnlock={handleUnlock} onBurn={handleLogout} />}
+      {screen === 'session-recovery' && <SessionRecoveryScreen onRecover={handleRecover} onBurn={handleLogout} />}
       {screen === 'login' && <LoginPage onLogin={handleLogin} onBiometricLogin={handleBiometricLogin} />}
       {screen === 'app' && (
         <Dashboard
@@ -320,6 +352,7 @@ export default function App() {
           userStatus={userStatus} theme={theme} setTheme={setTheme}
           canvasMode={canvasMode} setCanvasMode={setCanvasMode}
           biometricEnabled={biometricEnabled} setBiometricEnabled={setBiometricEnabled}
+          accountExpiresAt={accountExpiresAt}
         />
       )}
     </>
@@ -380,6 +413,54 @@ function BiometricLock({ callsign, onUnlock, onBurn }) {
   );
 }
 
+// ── Session Recovery Screen ───────────────────────────────────────────────────
+function SessionRecoveryScreen({ onRecover, onBurn }) {
+  const [pw, setPw] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState('');
+  const [showPw, setShowPw] = useState(false);
+
+  const submit = async () => {
+    if (!pw.trim()) return;
+    setLoading(true); setErr('');
+    try { await onRecover(pw); }
+    catch(e) { setErr(e.message); }
+    finally { setLoading(false); }
+  };
+
+  return (
+    <div className="login-bg">
+      <div className="login-noise" />
+      <div className="login-card" style={{ textAlign: 'center' }}>
+        <div className="login-logo" style={{ background: '#3b82f6' }}><Lock size={40} color="#fff" /></div>
+        <h1 className="login-title">Session Recovered</h1>
+        <p className="login-subtitle">Enter passcode to decrypt session</p>
+
+        <div className="login-fields" style={{ marginTop: 24 }}>
+          <div className="login-field">
+            <Lock size={18} className="login-field-icon" />
+            <input type={showPw ? 'text' : 'password'} placeholder="Passcode" value={pw}
+              onChange={e => setPw(e.target.value)} onKeyDown={e => e.key === 'Enter' && submit()} autoFocus />
+            <button className="pw-toggle" onClick={() => setShowPw(s => !s)} tabIndex={-1}>
+              {showPw ? <EyeOff size={15} /> : <Eye size={15} />}
+            </button>
+          </div>
+        </div>
+
+        {err && <div className="login-error">{err}</div>}
+
+        <button className="login-btn" onClick={submit} disabled={loading} style={{ marginTop: 20 }}>
+          {loading ? <span className="spinner" /> : 'Unlock Session'}
+        </button>
+
+        <button className="bio-burn-link" onClick={onBurn} style={{ marginTop: 20 }}>
+          <Zap size={12} /> Burn Local Session
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ── Login Page ────────────────────────────────────────────────────────────────
 function LoginPage({ onLogin, onBiometricLogin }) {
   const [cs, setCs] = useState('');
@@ -390,13 +471,14 @@ function LoginPage({ onLogin, onBiometricLogin }) {
   const [err, setErr] = useState('');
   const [showPw, setShowPw] = useState(false);
   const [registerBio, setRegisterBio] = useState(false);
+  const [lifespan, setLifespan] = useState('');
   const hasExistingCred = cs.length > 1 && hasCred(cs.toUpperCase());
   const waAvail = webAuthnAvailable();
 
   const submit = async () => {
     if (!cs.trim() || !pw.trim()) return;
     setLoading(true); setErr('');
-    try { await onLogin(cs.toUpperCase(), pw, st, registerBio); }
+    try { await onLogin(cs.toUpperCase(), pw, st, registerBio, lifespan); }
     catch(e) { setErr(e.message || 'Login failed'); }
     finally { setLoading(false); }
   };
@@ -438,6 +520,12 @@ function LoginPage({ onLogin, onBiometricLogin }) {
               {STATUS_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}
             </select>
           </div>
+          <div className="login-field">
+            <Clock size={18} className="login-field-icon" />
+            <select value={lifespan} onChange={e => setLifespan(e.target.value)}>
+              {TIMER_OPTIONS.map(o => <option key={o.label} value={o.value}>{o.label}</option>)}
+            </select>
+          </div>
         </div>
 
         {err && <div className="login-error">{err}</div>}
@@ -474,7 +562,7 @@ function LoginPage({ onLogin, onBiometricLogin }) {
 }
 
 // ── Dashboard ─────────────────────────────────────────────────────────────────
-function Dashboard({ callsign, keys, onLogout, userStatus, theme, setTheme, canvasMode, setCanvasMode, biometricEnabled, setBiometricEnabled }) {
+function Dashboard({ callsign, keys, onLogout, userStatus, theme, setTheme, canvasMode, setCanvasMode, biometricEnabled, setBiometricEnabled, accountExpiresAt }) {
   const [messages, setMessages]       = useState([]);
   const [users, setUsers]             = useState([]);
   const [searchQuery, setSearchQuery] = useState('');
@@ -548,6 +636,29 @@ function Dashboard({ callsign, keys, onLogout, userStatus, theme, setTheme, canv
     document.addEventListener('visibilitychange', onVis);
     return () => document.removeEventListener('visibilitychange', onVis);
   }, []);
+
+  // ── Account Expiration Timer ──────────────────────────────────────────────
+  const [timeLeftStr, setTimeLeftStr] = useState('');
+
+  useEffect(() => {
+    if (!accountExpiresAt) return;
+    const expDate = new Date(accountExpiresAt).getTime();
+    
+    const interval = setInterval(() => {
+      const now = Date.now();
+      const diff = expDate - now;
+      if (diff <= 0) {
+        clearInterval(interval);
+        onLogout();
+      } else {
+        const totalSecs = Math.floor(diff / 1000);
+        const m = Math.floor(totalSecs / 60);
+        const s = totalSecs % 60;
+        setTimeLeftStr(`${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`);
+      }
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [accountExpiresAt, onLogout]);
 
   // ── Data Fetching ─────────────────────────────────────────────────────────
   const fetchMessages = useCallback(async () => {
@@ -842,7 +953,7 @@ function Dashboard({ callsign, keys, onLogout, userStatus, theme, setTheme, canv
   }, [totalUnread]);
 
   return (
-    <div className="app">
+    <div className={`app ${activeChat ? 'chat-active' : ''}`}>
 
       {/* Toast */}
       {notification && (
@@ -861,7 +972,10 @@ function Dashboard({ callsign, keys, onLogout, userStatus, theme, setTheme, canv
               {callsign[0]}<span className="online-dot" />
             </div>
             <div className="profile-info">
-              <div className="profile-name">{callsign}</div>
+              <div className="profile-name">
+                {callsign}
+                {timeLeftStr && <span className="timer-badge">⏱ {timeLeftStr}</span>}
+              </div>
               <div className="profile-status">{myStatus}</div>
             </div>
             <div className="sidebar-actions">
@@ -946,6 +1060,9 @@ function Dashboard({ callsign, keys, onLogout, userStatus, theme, setTheme, canv
           <>
             <div className="chat-header">
               <div className="chat-header-left">
+                <button className="icon-btn mobile-back-btn" onClick={() => setActiveChat(null)}>
+                  <ChevronLeft size={24} />
+                </button>
                 <div className="avatar md" style={{ background: avatarColor(activeChat.callsign) }}>
                   {activeChat.callsign[0]}{isOnline(activeChat.lastSeen) && <span className="online-dot" />}
                 </div>
@@ -1141,6 +1258,27 @@ function PinnedBanner({ msgs, onUnpin }) {
   );
 }
 
+// ── Typewriter Text ──────────────────────────────────────────────────────────
+function TypewriterText({ text, hasMarkdown, isSent, highlight }) {
+  const [displayed, setDisplayed] = useState(isSent ? text : '');
+
+  useEffect(() => {
+    if (isSent || text === '…' || text.startsWith('[') || text === '') {
+      setDisplayed(text);
+      return;
+    }
+    let i = 0;
+    const t = setInterval(() => {
+      i += 2; 
+      setDisplayed(text.slice(0, Math.min(i, text.length)));
+      if (i >= text.length) clearInterval(t);
+    }, 10);
+    return () => clearInterval(t);
+  }, [text, isSent]);
+
+  return hasMarkdown ? <MarkdownText text={displayed} /> : highlight(displayed);
+}
+
 // ── Message Bubble ────────────────────────────────────────────────────────────
 function MessageBubble({ msg, isSent, sentCache, privateKey, replyMsg, msgSearch, callsign, isPinned, onReply, onReact, onDelete, onPin, onAutoDelete }) {
   const [text, setText]           = useState('…');
@@ -1267,7 +1405,7 @@ function MessageBubble({ msg, isSent, sentCache, privateKey, replyMsg, msgSearch
 
         {msgType === 'text' && (
           <div className="bubble-text">
-            {hasMarkdown ? <MarkdownText text={text} /> : highlight(text)}
+            <TypewriterText text={text} hasMarkdown={hasMarkdown} isSent={isSent} highlight={highlight} />
           </div>
         )}
 

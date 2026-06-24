@@ -59,3 +59,98 @@ export async function decryptAESKeyWithRSA(b64EncAes, rsaPrivKey) {
     "raw", rawAes, { name: "AES-GCM" }, true, ["encrypt", "decrypt"]
   );
 }
+
+// ── Persistent Encrypted Session ──────────────────────────────────────────────
+
+async function deriveKeyFromPasscode(passcode, salt) {
+  const enc = new TextEncoder();
+  const keyMaterial = await window.crypto.subtle.importKey(
+    "raw", enc.encode(passcode), "PBKDF2", false, ["deriveKey"]
+  );
+  return await window.crypto.subtle.deriveKey(
+    { name: "PBKDF2", salt: salt, iterations: 100000, hash: "SHA-256" },
+    keyMaterial,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["encrypt", "decrypt"]
+  );
+}
+
+export async function saveSession(callsign, rsaKeys, passcode, expiresAt) {
+  try {
+    const rawPub = await window.crypto.subtle.exportKey("spki", rsaKeys.publicKey);
+    const rawPriv = await window.crypto.subtle.exportKey("pkcs8", rsaKeys.privateKey);
+    
+    const payload = JSON.stringify({
+      callsign,
+      expiresAt,
+      pub: btoa(String.fromCharCode(...new Uint8Array(rawPub))),
+      priv: btoa(String.fromCharCode(...new Uint8Array(rawPriv)))
+    });
+    
+    const salt = window.crypto.getRandomValues(new Uint8Array(16));
+    const aesKey = await deriveKeyFromPasscode(passcode, salt);
+    const iv = window.crypto.getRandomValues(new Uint8Array(12));
+    
+    const encPayload = await window.crypto.subtle.encrypt(
+      { name: "AES-GCM", iv: iv }, aesKey, new TextEncoder().encode(payload)
+    );
+    
+    const sessionData = {
+      salt: btoa(String.fromCharCode(...salt)),
+      iv: btoa(String.fromCharCode(...iv)),
+      data: btoa(String.fromCharCode(...new Uint8Array(encPayload)))
+    };
+    
+    localStorage.setItem("sdcms_session", JSON.stringify(sessionData));
+    return true;
+  } catch (e) {
+    console.error("Session save failed", e);
+    return false;
+  }
+}
+
+export async function loadSession(passcode) {
+  const stored = localStorage.getItem("sdcms_session");
+  if (!stored) throw new Error("No session found");
+  
+  const { salt, iv, data } = JSON.parse(stored);
+  const aesKey = await deriveKeyFromPasscode(
+    passcode, 
+    Uint8Array.from(atob(salt), c => c.charCodeAt(0))
+  );
+  
+  try {
+    const decPayload = await window.crypto.subtle.decrypt(
+      { name: "AES-GCM", iv: Uint8Array.from(atob(iv), c => c.charCodeAt(0)) },
+      aesKey,
+      Uint8Array.from(atob(data), c => c.charCodeAt(0))
+    );
+    
+    const parsed = JSON.parse(new TextDecoder().decode(decPayload));
+    
+    const publicKey = await window.crypto.subtle.importKey(
+      "spki",
+      Uint8Array.from(atob(parsed.pub), c => c.charCodeAt(0)),
+      { name: "RSA-OAEP", hash: "SHA-256" },
+      true,
+      ["encrypt"]
+    );
+    
+    const privateKey = await window.crypto.subtle.importKey(
+      "pkcs8",
+      Uint8Array.from(atob(parsed.priv), c => c.charCodeAt(0)),
+      { name: "RSA-OAEP", hash: "SHA-256" },
+      true,
+      ["decrypt"]
+    );
+    
+    return { callsign: parsed.callsign, expiresAt: parsed.expiresAt, keys: { publicKey, privateKey } };
+  } catch (e) {
+    throw new Error("Invalid passcode or corrupted session");
+  }
+}
+
+export function clearSession() {
+  localStorage.removeItem("sdcms_session");
+}

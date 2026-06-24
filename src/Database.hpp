@@ -22,6 +22,7 @@ public:
     std::vector<User> getAllUsers();
     bool updateHeartbeat(const std::string& callsign, const std::string& statusMsg);
     bool updateStatus(const std::string& callsign, const std::string& statusMsg);
+    bool deleteExpiredUsers();
 
     // Message Operations
     bool addMessage(const Message& msg);
